@@ -4,9 +4,11 @@
 #include <limits>
 #include <cmath>
 #include <thread>
+#include <memory>
 #include <dirent.h>
 #include <atomic>
 #include <condition_variable>
+#include <mutex>
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/core.hpp>
@@ -20,8 +22,10 @@ constexpr float MATCH_WIDTH_COEF = 4;
 
 static cv::viz::Viz3d window("Show image");
 static std::atomic_bool exitFlag(false);
-static std::atomic_int nextFile(0);
+static std::atomic_int nextFileFlag(0);
 static std::string needLoadPathFile;
+static std::condition_variable conditionVar;
+static std::mutex mutexApp;
 
 int findRepetableImageSize(const cv::Mat& stereoImage)
 {
@@ -102,7 +106,11 @@ cv::Mat reconstructionDepth(const cv::Mat &stereoImage, const int repetableImage
 
       }
       depthMap.at<uint8_t>(i, j) = maxDepth;
-    }          
+     }
+
+      if ((i % 8) == 0) {
+        std::cout << "Processing " << std::dec << i << std::endl;
+      }          
   }
   return depthMap;    
 }
@@ -126,9 +134,17 @@ void keyboardViz3dHandle(const cv::viz::KeyboardEvent &w, void *t)
   cv::viz::Viz3d *fen = static_cast<cv::viz::Viz3d *>(t);
   std::cout << "Pressed "<< w.symbol << std::endl;
   if (w.symbol == "Escape") {
+    exitFlag.store(true);
     window.close();
+    conditionVar.notify_all();
   } else if (w.symbol == "Left") {
-
+    nextFileFlag = -1;
+    window.close();
+    conditionVar.notify_all();
+  } else if (w.symbol == "Right") {
+    nextFileFlag = 1;
+    window.close();
+    conditionVar.notify_all();
   }
 }
 
@@ -163,10 +179,15 @@ int main(int argc, char *argv[])
 
     std::sort(files.begin(), files.end());
 
-    auto file = files.begin();
+    auto fileInterator = files.cend();
     while (!exitFlag.load()) {
-      needLoadPathFile = path + "/" + *file; 
-      
+      if (fileInterator == files.cend()) {
+        fileInterator = files.cbegin();  
+      } else {
+        fileInterator++;
+      }
+      needLoadPathFile = path + "/" + *fileInterator; 
+      std::cout << "Read file: " << needLoadPathFile << std::endl;      
       cv::Mat image = cv::imread(needLoadPathFile);
       auto sizeReapetableImage = findRepetableImageSize(image);
       if (sizeReapetableImage) {
@@ -176,7 +197,20 @@ int main(int argc, char *argv[])
 
           window.showWidget("3D", cv::viz::WPaintedCloud(p));
           window.spin();
-        }       
+          if (window.wasStopped()) {
+            return;
+          }
+          //std::unique_lock<std::mutex> lk(mutexApp);
+          //conditionVar.wait(lk, []{return exitFlag.load();});
+          if (nextFileFlag == -1) {
+            fileInterator--;
+          } else if (nextFileFlag == 1) {
+            fileInterator++;
+          }
+          nextFileFlag = 0;
+        }
+
+               
     }
   });
 
