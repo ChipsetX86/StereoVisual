@@ -8,4 +8,4 @@ find_package(OpenCV REQUIRED)
 
 add_executable(StereoVisual main.cpp)
 
-target_link_libraries(StereoVisual ${OpenCV_LIBS})
+target_link_libraries(StereoVisual ${OpenCV_LIBS} pthread)

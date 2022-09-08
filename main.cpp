@@ -3,6 +3,10 @@
 #include <stdint.h>
 #include <limits>
 #include <cmath>
+#include <thread>
+#include <dirent.h>
+#include <atomic>
+#include <condition_variable>
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/core.hpp>
@@ -13,6 +17,11 @@ constexpr int MIN_MASK_REPEAT_COUNT = 5;
 constexpr int MAX_MASK_REPEAT_COUNT = 40;
 constexpr float BEST_DIFFERENCE_COEF = 0.3f;
 constexpr float MATCH_WIDTH_COEF = 4;
+
+static cv::viz::Viz3d window("Show image");
+static std::atomic_bool exitFlag(false);
+static std::atomic_int nextFile(0);
+static std::string needLoadPathFile;
 
 int findRepetableImageSize(const cv::Mat& stereoImage)
 {
@@ -115,8 +124,11 @@ List3DPoints imageDepthTo3DPoints(const cv::Mat& depthImage) {
 void keyboardViz3dHandle(const cv::viz::KeyboardEvent &w, void *t)
 {
   cv::viz::Viz3d *fen = static_cast<cv::viz::Viz3d *>(t);
-  if (w.action) {
-      std::cout << "you pressed "<< w.code<<" = "<<w.symbol<< " in viz window "<<fen->getWindowName()<<"\n";
+  std::cout << "Pressed "<< w.symbol << std::endl;
+  if (w.symbol == "Escape") {
+    window.close();
+  } else if (w.symbol == "Left") {
+
   }
 }
 
@@ -124,20 +136,53 @@ int main(int argc, char *argv[])
 {
   std::cout << "Start application" << std::endl;
 
-  cv::Mat image = cv::imread("1.jpg");
-
-  auto sizeReapetableImage = findRepetableImageSize(image);
-  if (sizeReapetableImage) {
-    std::cout << "Size repetable image: " << std::to_string(sizeReapetableImage) << std::endl;
-    auto depthImage = reconstructionDepth(image, sizeReapetableImage);
-
-    auto p = imageDepthTo3DPoints(depthImage);
-
-    cv::viz::Viz3d window("Show image");
-    window.showWidget("3D", cv::viz::WPaintedCloud(p));
-    window.registerKeyboardCallback(keyboardViz3dHandle, &window);
-    window.spin();
+  if (argc != 2) {
+    return EXIT_FAILURE;
   }
+
+  window.registerKeyboardCallback(keyboardViz3dHandle, &window);
+
+  std::string path(argv[1]);
+  std::cout << "Selected path: " << path << std::endl;
+  std::thread threadReadFiles([&path]() {
+    DIR *dir; 
+    struct dirent *diread;
+    std::vector<std::string> files;
+
+    if ((dir = opendir(path.data())) != nullptr) {
+        while ((diread = readdir(dir)) != nullptr) {
+            std::string file(diread->d_name);
+            if (file.substr(file.find_last_of(".") + 1) == "jpg" && diread->d_type == DT_REG) {
+              files.push_back(diread->d_name);
+            }
+        }
+        closedir(dir);
+    } else {
+        return;
+    }
+
+    std::sort(files.begin(), files.end());
+
+    auto file = files.begin();
+    while (!exitFlag.load()) {
+      needLoadPathFile = path + "/" + *file; 
+      
+      cv::Mat image = cv::imread(needLoadPathFile);
+      auto sizeReapetableImage = findRepetableImageSize(image);
+      if (sizeReapetableImage) {
+          std::cout << "Size repetable image: " << std::to_string(sizeReapetableImage) << std::endl;
+          auto depthImage = reconstructionDepth(image, sizeReapetableImage);
+          auto p = imageDepthTo3DPoints(depthImage);
+
+          window.showWidget("3D", cv::viz::WPaintedCloud(p));
+          window.spin();
+        }       
+    }
+  });
+
+  threadReadFiles.join();
+
+
 
   std::cout << "Close application" << std::endl;
   return EXIT_SUCCESS;
