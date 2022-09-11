@@ -7,6 +7,7 @@
 #include <memory>
 #include <dirent.h>
 #include <atomic>
+#include <condition_variable>
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/core.hpp>
@@ -22,6 +23,12 @@ static cv::viz::Viz3d window("Show image");
 static std::atomic_bool exitFlag(false);
 static std::atomic_int nextFileFlag(0);
 static std::string needLoadPathFile;
+static cv::Mat currentImage;
+static std::atomic_bool readFileSuccessFinished{false};
+static std::mutex readFileMutex;
+static std::condition_variable condVariableReadFile;
+static std::mutex pressKeyMutex;
+static std::condition_variable condVariablePressKey;
 
 int findRepetableImageSize(const cv::Mat& stereoImage)
 {
@@ -131,12 +138,15 @@ void keyboardViz3dHandle(const cv::viz::KeyboardEvent &w, void *t)
   std::cout << "Pressed "<< w.symbol << std::endl;
   if (w.symbol == "Escape") {
     exitFlag.store(true);
+    condVariablePressKey.notify_all();
     window.close();
   } else if (w.symbol == "Left") {
     nextFileFlag = -1;
+    condVariablePressKey.notify_all();
     window.close();
   } else if (w.symbol == "Right") {
     nextFileFlag = 1;
+    condVariablePressKey.notify_all();
     window.close();
   }
 }
@@ -154,6 +164,7 @@ int main(int argc, char *argv[])
   std::string path(argv[1]);
   std::cout << "Selected path: " << path << std::endl;
   std::thread threadReadFiles([&path]() {
+    readFileSuccessFinished.store(false);
     DIR *dir; 
     struct dirent *diread;
     std::vector<std::string> files;
@@ -189,36 +200,51 @@ int main(int argc, char *argv[])
 
       needLoadPathFile = path + "/" + *fileInterator; 
       std::cout << "Read file: " << needLoadPathFile << std::endl;      
-      cv::Mat image = cv::imread(needLoadPathFile);
-      auto sizeReapetableImage = findRepetableImageSize(image);
+      currentImage = cv::imread(needLoadPathFile);
+      readFileSuccessFinished.store(true);
+      condVariableReadFile.notify_all();
+
+      std::unique_lock<std::mutex> lk(pressKeyMutex);
+      condVariablePressKey.wait(lk, []{ return nextFileFlag.load() || exitFlag.load(); });
+      if (!nextFileFlag.load()) {
+        return;
+      }
+
+      if (nextFileFlag == -1) {
+        if (fileInterator == files.cbegin()) {
+          fileInterator = --files.cend();
+          --fileInterator;
+        } else {
+          --fileInterator;
+        }
+      } else if (nextFileFlag == 1) {
+        ++fileInterator;
+      }
+      nextFileFlag.store(0);
+      lk.unlock();
+    }
+  });
+
+  std::thread threadShowImage([]() {
+    while (!exitFlag.load()) {
+      std::unique_lock<std::mutex> lk(readFileMutex);
+      condVariableReadFile.wait(lk, []{ return readFileSuccessFinished.load(); });
+
+      auto sizeReapetableImage = findRepetableImageSize(currentImage);
       if (sizeReapetableImage) {
           std::cout << "Size repetable image: " << std::to_string(sizeReapetableImage) << std::endl;
-          auto depthImage = reconstructionDepth(image, sizeReapetableImage);
+          auto depthImage = reconstructionDepth(currentImage, sizeReapetableImage);
           auto p = imageDepthTo3DPoints(depthImage);
 
           window.showWidget("3D", cv::viz::WPaintedCloud(p));
           window.spin();
-
-          if (!nextFileFlag.load()) {
-            return;
-          }
-
-          if (nextFileFlag == -1) {
-            if (fileInterator == files.cbegin()) {
-              fileInterator = --files.cend();
-              --fileInterator;
-            } else {
-              --fileInterator;
-            }
-          } else if (nextFileFlag == 1) {
-            ++fileInterator;
-          }
-          nextFileFlag = 0;
-        }
+      }
+      lk.unlock();
     }
   });
 
   threadReadFiles.join();
+  threadShowImage.join();
 
   std::cout << "Close application" << std::endl;
   return EXIT_SUCCESS;
